@@ -2159,10 +2159,12 @@ static ngx_int_t
 init_module (ngx_cycle_t *cycle) {
     ngx_http_pipelog_main_conf_t *pmcf;
 
-    pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
-    pmcf->pid = ngx_http_pipelog_fork_logger_process(cycle->log);
-    if (pmcf->pid == -1) {
-        return NGX_ERROR;
+    if (!ngx_test_config) {
+        pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
+        pmcf->pid = ngx_http_pipelog_fork_logger_process(cycle->log);
+        if (pmcf->pid == -1) {
+            return NGX_ERROR;
+        }
     }
     return NGX_OK;
 }
