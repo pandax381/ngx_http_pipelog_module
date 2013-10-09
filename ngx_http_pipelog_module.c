@@ -1893,6 +1893,7 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "pipe(): error");
         return NGX_CONF_ERROR;
     }
+    ngx_nonblocking(pipelog->pipefd[1]);
     pipelog->command = value[1];
     cache = ngx_array_push(&pipelogs);
     if (cache == NULL) {
