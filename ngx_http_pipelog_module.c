@@ -1703,8 +1703,6 @@ ngx_http_log_init(ngx_conf_t *cf)
 #define MODULE_NAME "ngx_http_pipelog_module"
 #define SHELL_CMD "/bin/sh"
 
-static ngx_array_t pipelogs;
-
 typedef struct {
     ngx_array_t formats;
     ngx_uint_t combined_used;
@@ -1782,6 +1780,8 @@ ngx_module_t ngx_http_pipelog_module = {
     NGX_MODULE_V1_PADDING
 };
 
+static ngx_array_t pipelogs;
+
 static void *
 ngx_http_pipelog_create_main_conf (ngx_conf_t *cf) {
     ngx_http_pipelog_main_conf_t *conf;
@@ -1838,7 +1838,7 @@ static char *
 ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_pipelog_loc_conf_t *plcf;
     ngx_str_t *value, name;
-    ngx_http_pipelog_t *pipelog, **cache;
+    ngx_http_pipelog_t *pipelog, *cache;
     ngx_http_pipelog_main_conf_t *pmcf;
     ngx_uint_t i;
     ngx_http_log_fmt_t *fmt;
@@ -1900,7 +1900,7 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "pipefd is NULL");
         return NGX_CONF_ERROR;
     }
-    *cache = pipelog;
+    *cache = *pipelog;
     return NGX_CONF_OK;
 }
 
@@ -2081,7 +2081,7 @@ static ngx_uint_t
 ngx_http_pipelog_reap_chelid (ngx_log_t *log) {
     ngx_uint_t num, idx;
     pid_t pid;
-    ngx_http_pipelog_t **pipelog;
+    ngx_http_pipelog_t *pipelog;
 
     for (num = 0; ;num++) {
         pid = waitpid(-1, NULL, WNOHANG);
@@ -2090,19 +2090,19 @@ ngx_http_pipelog_reap_chelid (ngx_log_t *log) {
         }
         pipelog = pipelogs.elts;
         for (idx = 0; idx < pipelogs.nelts; idx++) {
-            if (pipelog[idx]->pid == pid) {
+            if (pipelog[idx].pid == pid) {
                 break;
             }
         }
         if (idx == pipelogs.nelts) {
             break;
         }
-        pipelog[idx]->pid = ngx_http_pipelog_command_exec(&pipelog[idx]->command, pipelog[idx]->pipefd[0]);
-        if (pipelog[idx]->pid == -1) {
+        pipelog[idx].pid = ngx_http_pipelog_command_exec(&pipelog[idx].command, pipelog[idx].pipefd[0]);
+        if (pipelog[idx].pid == -1) {
             ngx_log_error(NGX_LOG_ALERT, log, 0, "%s: reap child process (pid='%d'), respawn child process failed", MODULE_NAME, pid);
             continue;
         }
-        ngx_log_error(NGX_LOG_ALERT, log, 0, "%s: reap child process (pid='%d'), respawn child process (pid='%d')", MODULE_NAME, pid, pipelog[idx]->pid);
+        ngx_log_error(NGX_LOG_ALERT, log, 0, "%s: reap child process (pid='%d'), respawn child process (pid='%d')", MODULE_NAME, pid, pipelog[idx].pid);
     }
     return num;
 }
@@ -2111,10 +2111,10 @@ void
 ngx_http_pipelog_logger_process_main (ngx_log_t *log) {
     struct sigaction sa;
     sigset_t set;
-    size_t i;
+    ngx_uint_t idx;
     struct timespec timeout;
     int sig;
-    ngx_http_pipelog_t **pipelog;
+    ngx_http_pipelog_t *pipelog;
 
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = SIG_IGN;
@@ -2123,9 +2123,9 @@ ngx_http_pipelog_logger_process_main (ngx_log_t *log) {
     sigaddset(&set, SIGCHLD);
     sigprocmask(SIG_BLOCK, &set, NULL);
     pipelog = pipelogs.elts;
-    for (i = 0; i < pipelogs.nelts; i++) {
-        pipelog[i]->pid = ngx_http_pipelog_command_exec(&pipelog[i]->command, pipelog[i]->pipefd[0]);
-        if (pipelog[i]->pid == -1) {
+    for (idx = 0; idx < pipelogs.nelts; idx++) {
+        pipelog[idx].pid = ngx_http_pipelog_command_exec(&pipelog[idx].command, pipelog[idx].pipefd[0]);
+        if (pipelog[idx].pid == -1) {
             ngx_log_error(NGX_LOG_ALERT, log, 0, "%s: ngx_http_pipelog_command_exec(): error", MODULE_NAME);
         }
     }
@@ -2149,6 +2149,9 @@ ngx_http_pipelog_fork_logger_process (ngx_log_t *log) {
         return -1;
     }
     if (pid == 0) {
+        close(STDIN_FILENO);
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
         ngx_setproctitle("logger process");
         ngx_http_pipelog_logger_process_main(log);
         exit(1);
