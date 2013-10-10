@@ -24,7 +24,7 @@ Directives
     pipelog_format name string ...
     
   * This directive is the same as log_format of HttpLogModule.
-  * This directive default value is combined.
+  * This directive default value is *combined*.
 
 ***pipelog***
 
@@ -32,7 +32,7 @@ Directives
  
     pipelog off
     
-  * This directive default value is off. 
+  * This directive default value is *off*. 
 
 Example
 ===
