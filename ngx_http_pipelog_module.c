@@ -1698,15 +1698,16 @@ ngx_http_log_init(ngx_conf_t *cf)
 #include <ngx_setproctitle.h>
 #include <ngx_process.h>
 #include <sys/param.h>
-#include <pthread.h>
 
 #define MODULE_NAME "ngx_http_pipelog_module"
+#define LOGGER_PROC_NAME "logger process"
 #define SHELL_CMD "/bin/sh"
 
 typedef struct {
+    ngx_array_t pims;
     ngx_array_t formats;
     ngx_uint_t combined_used;
-    pid_t pid;
+    ngx_pid_t pid;
 } ngx_http_pipelog_main_conf_t;
 
 typedef struct {
@@ -1715,9 +1716,13 @@ typedef struct {
 } ngx_http_pipelog_loc_conf_t;
 
 typedef struct {
-    ngx_fd_t pipefd[2];
-    pid_t pid;
+    ngx_fd_t fd[2];
     ngx_str_t command;
+    pid_t pid;
+} ngx_http_pipelog_pim_t;
+
+typedef struct {
+    ngx_http_pipelog_pim_t *pim;
     ngx_http_log_fmt_t *format;
 } ngx_http_pipelog_t;
 
@@ -1780,8 +1785,6 @@ ngx_module_t ngx_http_pipelog_module = {
     NGX_MODULE_V1_PADDING
 };
 
-static ngx_array_t pipelogs;
-
 static void *
 ngx_http_pipelog_create_main_conf (ngx_conf_t *cf) {
     ngx_http_pipelog_main_conf_t *conf;
@@ -1804,7 +1807,7 @@ ngx_http_pipelog_create_main_conf (ngx_conf_t *cf) {
     if (fmt->ops == NULL) {
         return NULL;
     }
-    if (ngx_array_init(&pipelogs, cf->pool, 4, sizeof(ngx_http_pipelog_t)) != NGX_OK) {
+    if (ngx_array_init(&conf->pims, cf->pool, 4, sizeof(ngx_http_pipelog_pim_t)) != NGX_OK) {
         return NULL;
     }
     return conf;
@@ -1838,9 +1841,9 @@ static char *
 ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_pipelog_loc_conf_t *plcf;
     ngx_str_t *value, name;
-    ngx_http_pipelog_t *pipelog, *cache;
+    ngx_http_pipelog_t *pipelog;
     ngx_http_pipelog_main_conf_t *pmcf;
-    ngx_uint_t i;
+    ngx_uint_t idx;
     ngx_http_log_fmt_t *fmt;
 
     plcf = conf;
@@ -1879,9 +1882,9 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
         pmcf->combined_used = 1;
     }
     fmt = pmcf->formats.elts;
-    for (i = 0; i < pmcf->formats.nelts; i++) {
-        if (fmt[i].name.len == name.len && ngx_strcasecmp(fmt[i].name.data, name.data) == 0) {
-            pipelog->format = &fmt[i];
+    for (idx = 0; idx < pmcf->formats.nelts; idx++) {
+        if (fmt[idx].name.len == name.len && ngx_strcasecmp(fmt[idx].name.data, name.data) == 0) {
+            pipelog->format = &fmt[idx];
             break;
         }
     }
@@ -1889,18 +1892,17 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "unknown log format \"%V\"", &name);
         return NGX_CONF_ERROR;
     }
-    if (pipe(pipelog->pipefd) < 0) {
+    pipelog->pim = ngx_array_push(&pmcf->pims);
+    if (pipelog->pim == NULL) {
+        return NGX_CONF_ERROR;
+    }
+    ngx_memzero(pipelog->pim, sizeof(ngx_http_pipelog_pim_t));
+    if (pipe(pipelog->pim->fd) < 0) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "pipe(): error");
         return NGX_CONF_ERROR;
     }
-    ngx_nonblocking(pipelog->pipefd[1]);
-    pipelog->command = value[1];
-    cache = ngx_array_push(&pipelogs);
-    if (cache == NULL) {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "pipefd is NULL");
-        return NGX_CONF_ERROR;
-    }
-    *cache = *pipelog;
+    ngx_nonblocking(pipelog->pim->fd[1]);
+    pipelog->pim->command = value[1];
     return NGX_CONF_OK;
 }
 
@@ -1957,7 +1959,7 @@ static void
 ngx_http_pipelog_write(ngx_http_request_t *r, ngx_http_pipelog_t *pipelog, u_char *buf, size_t len) {
     ssize_t n;
 
-    n = ngx_write_fd(pipelog->pipefd[1], buf, len);
+    n = ngx_write_fd(pipelog->pim->fd[1], buf, len);
     if (n == (ssize_t) len) {
         return;
     }
@@ -2044,11 +2046,11 @@ ngx_http_pipelog_init (ngx_conf_t *cf) {
     return NGX_OK;
 }
 
-static pid_t
+static ngx_pid_t
 ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd) {
-    pid_t pid;
+    ngx_pid_t pid;
     char *argv[4], cmd[1024];
-    int fd;
+    ngx_fd_t fd;
 
     if (command->len > sizeof(cmd) - 1) {
         return -1;
@@ -2078,43 +2080,46 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd) {
 }
 
 static ngx_uint_t
-ngx_http_pipelog_reap_chelid (ngx_log_t *log) {
+ngx_http_pipelog_reap_chelid (ngx_cycle_t *cycle) {
+    ngx_http_pipelog_main_conf_t *pmcf;
     ngx_uint_t num, idx;
-    pid_t pid;
-    ngx_http_pipelog_t *pipelog;
+    ngx_pid_t pid;
+    ngx_http_pipelog_pim_t *pim;
 
+    pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
     for (num = 0; ;num++) {
         pid = waitpid(-1, NULL, WNOHANG);
         if (pid == -1) {
             break;
         }
-        pipelog = pipelogs.elts;
-        for (idx = 0; idx < pipelogs.nelts; idx++) {
-            if (pipelog[idx].pid == pid) {
+        pim = pmcf->pims.elts;
+        for (idx = 0; idx < pmcf->pims.nelts; idx++) {
+            if (pim[idx].pid == pid) {
                 break;
             }
         }
-        if (idx == pipelogs.nelts) {
+        if (idx == pmcf->pims.nelts) {
             break;
         }
-        pipelog[idx].pid = ngx_http_pipelog_command_exec(&pipelog[idx].command, pipelog[idx].pipefd[0]);
-        if (pipelog[idx].pid == -1) {
-            ngx_log_error(NGX_LOG_ALERT, log, 0, "%s: reap child process (pid='%d'), respawn child process failed", MODULE_NAME, pid);
+        pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0]);
+        if (pim[idx].pid == -1) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: reap child process (pid='%d'), respawn child process failed", MODULE_NAME, pid);
             continue;
         }
-        ngx_log_error(NGX_LOG_ALERT, log, 0, "%s: reap child process (pid='%d'), respawn child process (pid='%d')", MODULE_NAME, pid, pipelog[idx].pid);
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: reap child process (pid='%d'), respawn child process (pid='%d')", MODULE_NAME, pid, pim[idx].pid);
     }
     return num;
 }
 
 void
-ngx_http_pipelog_logger_process_main (ngx_log_t *log) {
+ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     struct sigaction sa;
     sigset_t set;
+    ngx_http_pipelog_main_conf_t *pmcf;
+    ngx_http_pipelog_pim_t *pim;
     ngx_uint_t idx;
     struct timespec timeout;
     int sig;
-    ngx_http_pipelog_t *pipelog;
 
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = SIG_IGN;
@@ -2122,11 +2127,12 @@ ngx_http_pipelog_logger_process_main (ngx_log_t *log) {
     sigemptyset(&set);
     sigaddset(&set, SIGCHLD);
     sigprocmask(SIG_BLOCK, &set, NULL);
-    pipelog = pipelogs.elts;
-    for (idx = 0; idx < pipelogs.nelts; idx++) {
-        pipelog[idx].pid = ngx_http_pipelog_command_exec(&pipelog[idx].command, pipelog[idx].pipefd[0]);
-        if (pipelog[idx].pid == -1) {
-            ngx_log_error(NGX_LOG_ALERT, log, 0, "%s: ngx_http_pipelog_command_exec(): error", MODULE_NAME);
+    pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
+    pim = pmcf->pims.elts;
+    for (idx = 0; idx < pmcf->pims.nelts; idx++) {
+        pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0]);
+        if (pim[idx].pid == -1) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec(): error", MODULE_NAME);
         }
     }
     timeout.tv_sec  = 1;
@@ -2134,40 +2140,34 @@ ngx_http_pipelog_logger_process_main (ngx_log_t *log) {
     while (1) {
         sig = sigtimedwait(&set, NULL, &timeout);
         if (sig != -1) {
-            ngx_http_pipelog_reap_chelid(log);
+            ngx_http_pipelog_reap_chelid(cycle);
         }
     }
-}
-
-static ngx_pid_t
-ngx_http_pipelog_fork_logger_process (ngx_log_t *log) {
-    ngx_pid_t pid;
-
-    pid = fork();
-    if (pid < 0) {
-        ngx_log_error(NGX_LOG_ALERT, log, 0, "%s: fork(): error", MODULE_NAME);
-        return -1;
-    }
-    if (pid == 0) {
-        close(STDIN_FILENO);
-        close(STDOUT_FILENO);
-        close(STDERR_FILENO);
-        ngx_setproctitle("logger process");
-        ngx_http_pipelog_logger_process_main(log);
-        exit(1);
-    }
-    return pid;
 }
 
 static ngx_int_t
 init_module (ngx_cycle_t *cycle) {
     ngx_http_pipelog_main_conf_t *pmcf;
+    ngx_fd_t fd;
 
     if (!ngx_test_config) {
         pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
-        pmcf->pid = ngx_http_pipelog_fork_logger_process(cycle->log);
-        if (pmcf->pid == -1) {
+        pmcf->pid = fork();
+        if (pmcf->pid < 0) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: fork(): error", MODULE_NAME);
             return NGX_ERROR;
+        }
+        if (pmcf->pid == 0) {
+            fd = open("/dev/null", O_RDWR);
+            if (fd != -1) {
+                dup2(fd, STDIN_FILENO);
+                dup2(fd, STDOUT_FILENO);
+                dup2(fd, STDERR_FILENO);
+                close(fd);
+            }
+            ngx_setproctitle(LOGGER_PROC_NAME);
+            ngx_http_pipelog_logger_process_main(cycle);
+            exit(1);
         }
     }
     return NGX_OK;
