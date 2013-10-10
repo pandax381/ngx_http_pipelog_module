@@ -1719,6 +1719,7 @@ typedef struct {
     ngx_fd_t fd[2];
     ngx_str_t command;
     pid_t pid;
+    struct timeval timestamp;
 } ngx_http_pipelog_pim_t;
 
 typedef struct {
@@ -1784,6 +1785,17 @@ ngx_module_t ngx_http_pipelog_module = {
     exit_master,                       /* exit master                   */
     NGX_MODULE_V1_PADDING
 };
+
+struct timeval *
+tvsub(struct timeval *a, struct timeval *b, struct timeval *res) {
+    res->tv_sec = a->tv_sec - b->tv_sec;
+    res->tv_usec = a->tv_usec - b->tv_usec;
+    if(res->tv_usec < 0) {
+        res->tv_sec -= 1;
+        res->tv_usec += 1000000;
+    }
+    return res;
+}
 
 static void *
 ngx_http_pipelog_create_main_conf (ngx_conf_t *cf) {
@@ -2081,11 +2093,13 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd) {
 
 static ngx_uint_t
 ngx_http_pipelog_reap_chelid (ngx_cycle_t *cycle) {
+    struct timeval now, diff;
     ngx_http_pipelog_main_conf_t *pmcf;
     ngx_uint_t num, idx;
     ngx_pid_t pid;
     ngx_http_pipelog_pim_t *pim;
 
+    gettimeofday(&now, NULL);
     pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
     for (num = 0; ;num++) {
         pid = waitpid(-1, NULL, WNOHANG);
@@ -2101,6 +2115,13 @@ ngx_http_pipelog_reap_chelid (ngx_cycle_t *cycle) {
         if (idx == pmcf->pims.nelts) {
             break;
         }
+        tvsub(&now, &pim[idx].timestamp, &diff);
+        if (!diff.tv_sec) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: reap child process (pid='%d'), respawn child process after 1 sec", MODULE_NAME, pid);
+            pim[idx].pid = -1;
+            continue;
+        }
+        pim[idx].timestamp = now;
         pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0]);
         if (pim[idx].pid == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: reap child process (pid='%d'), respawn child process failed", MODULE_NAME, pid);
@@ -2115,6 +2136,7 @@ void
 ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     struct sigaction sa;
     sigset_t set;
+    struct timeval now, diff;
     ngx_http_pipelog_main_conf_t *pmcf;
     ngx_http_pipelog_pim_t *pim;
     ngx_uint_t idx;
@@ -2127,6 +2149,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     sigemptyset(&set);
     sigaddset(&set, SIGCHLD);
     sigprocmask(SIG_BLOCK, &set, NULL);
+    gettimeofday(&now, NULL);
     pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
     pim = pmcf->pims.elts;
     for (idx = 0; idx < pmcf->pims.nelts; idx++) {
@@ -2134,6 +2157,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
         if (pim[idx].pid == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec(): error", MODULE_NAME);
         }
+        pim[idx].timestamp = now;
     }
     timeout.tv_sec  = 1;
     timeout.tv_nsec = 0;
@@ -2141,6 +2165,25 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
         sig = sigtimedwait(&set, NULL, &timeout);
         if (sig != -1) {
             ngx_http_pipelog_reap_chelid(cycle);
+        } else {
+            gettimeofday(&now, NULL);
+            pim = pmcf->pims.elts;
+            for (idx = 0; idx < pmcf->pims.nelts; idx++) {
+                if (pim[idx].pid != -1) {
+                    continue;
+                }
+                tvsub(&now, &pim[idx].timestamp, &diff);
+                if (!diff.tv_sec) {
+                    continue;
+                }
+                pim[idx].timestamp = now;
+                pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0]);
+                if (pim[idx].pid == -1) {
+                    ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: respawn child process failed", MODULE_NAME);
+                    continue;
+                }
+                ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: respawn child process (pid='%d')", MODULE_NAME, pim[idx].pid);
+            }
         }
     }
 }
