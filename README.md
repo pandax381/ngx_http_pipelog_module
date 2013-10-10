@@ -1,5 +1,7 @@
 # ngx_http_pipelog_module
 
+This module allows to send HTTP access log to an external program via pipe.
+
 Installation
 ===
 
