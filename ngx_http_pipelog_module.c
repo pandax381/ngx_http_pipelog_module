@@ -1718,6 +1718,7 @@ typedef struct {
 typedef struct {
     ngx_fd_t fd[2];
     ngx_str_t command;
+    ngx_uint_t nonblocking;
     pid_t pid;
     struct timeval timestamp;
 } ngx_http_pipelog_pim_t;
@@ -1857,6 +1858,7 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_pipelog_main_conf_t *pmcf;
     ngx_uint_t idx;
     ngx_http_log_fmt_t *fmt;
+    ngx_uint_t nonblocking = 0;
 
     plcf = conf;
     value = cf->args->elts;
@@ -1889,6 +1891,9 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
         if (ngx_strcmp(name.data, "combined") == 0) {
             pmcf->combined_used = 1;
         }
+        if (cf->args->nelts >= 4 && ngx_strcmp(value[3].data, "nonblocking") == 0) {
+            nonblocking = 1;
+        }
     } else {
         ngx_str_set(&name, "combined");
         pmcf->combined_used = 1;
@@ -1913,7 +1918,10 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "pipe(): error");
         return NGX_CONF_ERROR;
     }
-    ngx_nonblocking(pipelog->pim->fd[1]);
+    pipelog->pim->nonblocking = nonblocking;
+    if (pipelog->pim->nonblocking) {
+        ngx_nonblocking(pipelog->pim->fd[1]);
+    }
     pipelog->pim->command = value[1];
     return NGX_CONF_OK;
 }
@@ -1971,12 +1979,16 @@ static void
 ngx_http_pipelog_write(ngx_http_request_t *r, ngx_http_pipelog_t *pipelog, u_char *buf, size_t len) {
     ssize_t n;
 
+retry:
     n = ngx_write_fd(pipelog->pim->fd[1], buf, len);
     if (n == (ssize_t) len) {
         return;
     }
     if (n < 0) {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0, "ngx_http_pipelog_write(): failed");
+        if (errno == EINTR) {
+            goto retry;
+        }
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0, "ngx_http_pipelog_write(): failed: %s", strerror(errno));
         return;
     }
     ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0, "ngx_http_pipelog_write(): incomplete: %z of %uz", n, len);
