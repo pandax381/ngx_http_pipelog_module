@@ -1985,7 +1985,7 @@ retry:
         return;
     }
     if (n < 0) {
-        if (errno == EINTR) {
+        if (!pipelog->pim->nonblocking && errno == EINTR) {
             goto retry;
         }
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0, "ngx_http_pipelog_write(): failed: %s", strerror(errno));
