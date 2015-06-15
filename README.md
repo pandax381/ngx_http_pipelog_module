@@ -28,7 +28,7 @@ Directives
 
 ***pipelog***
 
-    pipelog command format
+    pipelog command format [nonblocking]
  
     pipelog off
     
