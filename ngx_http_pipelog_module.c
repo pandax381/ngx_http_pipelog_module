@@ -1726,6 +1726,7 @@ typedef struct {
 typedef struct {
     ngx_http_pipelog_pim_t *pim;
     ngx_http_log_fmt_t *format;
+    ngx_http_complex_value_t *filter;
 } ngx_http_pipelog_t;
 
 static void *
@@ -1853,11 +1854,13 @@ ngx_http_pipelog_merge_loc_conf (ngx_conf_t *cf, void *parent, void *child) {
 static char *
 ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_pipelog_loc_conf_t *plcf;
-    ngx_str_t *value, name;
+    ngx_str_t *value, name, filter;
     ngx_http_pipelog_t *pipelog;
     ngx_http_pipelog_main_conf_t *pmcf;
     ngx_uint_t idx;
     ngx_http_log_fmt_t *fmt;
+    ngx_uint_t i;
+    ngx_http_compile_complex_value_t ccv;
     ngx_uint_t nonblocking = 0;
 
     plcf = conf;
@@ -1908,6 +1911,27 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     if (pipelog->format == NULL) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "unknown log format \"%V\"", &name);
         return NGX_CONF_ERROR;
+    }
+    filter.len = 0;
+    for (i = 3; i < cf->args->nelts; i++) {
+        if (ngx_strncmp(value[i].data, "if=", 3) == 0) {
+            filter.len = value[i].len - 3;
+            filter.data = value[i].data + 3;
+            break;
+        }
+    }
+    if (filter.len) {
+        pipelog->filter = ngx_palloc(cf->pool, sizeof(ngx_http_complex_value_t));
+        if (pipelog->filter == NULL) {
+            return NGX_CONF_ERROR;
+        }
+        ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
+        ccv.cf = cf;
+        ccv.value = &filter;
+        ccv.complex_value = pipelog->filter;
+        if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
     }
     pipelog->pim = ngx_array_push(&pmcf->pims);
     if (pipelog->pim == NULL) {
@@ -1999,6 +2023,7 @@ ngx_http_pipelog_handler (ngx_http_request_t *r) {
     ngx_http_pipelog_loc_conf_t *plcf;
     ngx_http_pipelog_t *pipelog;
     ngx_uint_t i, l;
+    ngx_str_t val;
     size_t len;
     u_char *line, *p;
     ngx_http_log_op_t *op;
@@ -2012,6 +2037,14 @@ ngx_http_pipelog_handler (ngx_http_request_t *r) {
     }
     pipelog = plcf->pipelogs->elts;
     for (l = 0; l < plcf->pipelogs->nelts; l++) {
+        if (pipelog[l].filter) {
+            if (ngx_http_complex_value(r, pipelog[l].filter, &val) != NGX_OK) {
+                return NGX_ERROR;
+            }
+            if (val.len == 0 || (val.len == 1 && val.data[0] == '0')) {
+                continue;
+            }
+        }
         ngx_http_script_flush_no_cacheable_variables(r, pipelog[l].format->flushes);
         len = 0;
         op = pipelog[l].format->ops->elts;
