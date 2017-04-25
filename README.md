@@ -28,9 +28,9 @@ Directives
 
 ***pipelog***
 
-    pipelog command format [nonblocking]
+    pipelog command [format [nonblocking] [if=condition]];
  
-    pipelog off
+    pipelog off;
     
   * default value is *off*. 
 
