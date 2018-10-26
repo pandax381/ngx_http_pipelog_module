@@ -2133,6 +2133,7 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd) {
         execvp(argv[0], argv);
         exit(1);
     }
+    close(rfd);
     return pid;
 }
 
