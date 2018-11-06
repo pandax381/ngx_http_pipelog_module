@@ -2208,6 +2208,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     timeout.tv_nsec = 0;
     while (1) {
         sig = sigtimedwait(&set, NULL, &timeout);
+        ngx_time_update();
         if (sig != -1) {
             ngx_http_pipelog_reap_chelid(cycle);
         } else {
