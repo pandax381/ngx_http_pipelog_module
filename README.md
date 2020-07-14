@@ -30,7 +30,8 @@ Note: This module has been tested with nginx 1.5.6 and 1.4.3
  
     pipelog off;
     
-  * default value is *off*. 
+  * default value is *off*.
+  * command does not need the pipe symbol `|` prefix.
 
 ## Example
 
