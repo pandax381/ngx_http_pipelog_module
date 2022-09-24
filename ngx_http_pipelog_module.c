@@ -2212,7 +2212,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     sigprocmask(SIG_BLOCK, &set, NULL);
 
     ccf = (ngx_core_conf_t *)ngx_get_conf(cycle->conf_ctx, ngx_core_module);
-    if (geteudi() == 0) {
+    if (geteuid() == 0) {
         if (setresuid(0, 0, ccf->user) == -1) {
             ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno, "%s: setresuid(%d, %d, %d) failed", MODULE_NAME, 0, 0, ccf->user);
             /* fatal */
