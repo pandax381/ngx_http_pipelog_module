@@ -2109,6 +2109,8 @@ ngx_http_pipelog_init (ngx_conf_t *cf) {
 
 static ngx_pid_t
 ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cycle) {
+    ngx_core_conf_t *ccf;
+    ccf = (ngx_core_conf_t *)ngx_get_conf(cycle->conf_ctx, ngx_core_module);
     ngx_pid_t pid;
     char *argv[4], cmd[1024];
     ngx_fd_t fd;
