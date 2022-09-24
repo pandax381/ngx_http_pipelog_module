@@ -2142,6 +2142,12 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cy
         execvp(argv[0], argv);
         exit(1);
     default:
+        if (setresuid(0, 0, ccf->user) == -1) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno, "%s: setresuid(%d, %d, %d) failed", MODULE_NAME, 0, 0, ccf->user);
+            /* fatal */
+            exit(2);
+        }
+
         break;
     }
     return pid;
