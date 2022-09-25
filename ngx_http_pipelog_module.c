@@ -2109,8 +2109,6 @@ ngx_http_pipelog_init (ngx_conf_t *cf) {
 
 static ngx_pid_t
 ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cycle) {
-    ngx_core_conf_t *ccf;
-    ccf = (ngx_core_conf_t *)ngx_get_conf(cycle->conf_ctx, ngx_core_module);
     ngx_pid_t pid;
     char *argv[4], cmd[1024];
     ngx_fd_t fd;
@@ -2144,12 +2142,6 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cy
         execvp(argv[0], argv);
         exit(1);
     default:
-        if (setresuid(0, 0, ccf->user) == -1) {
-            ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno, "%s: setresuid(%d, %d, %d) failed", MODULE_NAME, 0, 0, ccf->user);
-            /* fatal */
-            exit(2);
-        }
-
         break;
     }
     return pid;
@@ -2200,6 +2192,7 @@ void
 ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     struct sigaction sa;
     sigset_t set;
+    ngx_core_conf_t *ccf;
     struct timeval now, diff;
     ngx_http_pipelog_main_conf_t *pmcf;
     ngx_http_pipelog_pim_t *pim;
@@ -2218,6 +2211,14 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     sigaddset(&set, SIGCHLD);
     sigprocmask(SIG_BLOCK, &set, NULL);
 
+    ccf = (ngx_core_conf_t *)ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+    if (geteuid() == 0) {
+        if (setresuid(0, 0, ccf->user) == -1) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno, "%s: setresuid(%d, %d, %d) failed", MODULE_NAME, 0, 0, ccf->user);
+            /* fatal */
+            exit(2);
+        }
+    }
     gettimeofday(&now, NULL);
     pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
     pim = pmcf->pims.elts;
