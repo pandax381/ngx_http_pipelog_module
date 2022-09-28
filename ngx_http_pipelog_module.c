@@ -2209,7 +2209,6 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     sigemptyset(&set);
     sigaddset(&set, SIGTERM);
     sigaddset(&set, SIGCHLD);
-    sigprocmask(SIG_BLOCK, &set, NULL);
 
     ccf = (ngx_core_conf_t *)ngx_get_conf(cycle->conf_ctx, ngx_core_module);
     if (geteuid() == 0) {
