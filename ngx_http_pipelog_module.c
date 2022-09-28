@@ -2207,6 +2207,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     sa.sa_handler = SIG_IGN;
     sigaction(SIGPIPE, &sa, NULL);
     sigemptyset(&set);
+    sigaddset(&set, SIGTERM);
     sigaddset(&set, SIGCHLD);
     sigprocmask(SIG_BLOCK, &set, NULL);
 
