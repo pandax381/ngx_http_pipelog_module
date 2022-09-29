@@ -4,7 +4,6 @@
  * Copyright (C) Nginx, Inc.
  */
 
-
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
@@ -1697,9 +1696,6 @@ ngx_http_log_init(ngx_conf_t *cf)
 #include <ngx_setproctitle.h>
 #include <ngx_process.h>
 #include <sys/param.h>
-#if (NGX_LINUX)
-#include <linux/prctl.h>
-#endif
 
 #define MODULE_NAME "ngx_http_pipelog_module"
 #define LOGGER_PROC_NAME "logger process"
@@ -2108,7 +2104,9 @@ ngx_http_pipelog_init (ngx_conf_t *cf) {
 }
 
 static ngx_pid_t
-ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cycle, sigset_t mask) {
+ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cycle) {
+    ngx_core_conf_t *ccf;
+    ccf = (ngx_core_conf_t *)ngx_get_conf(cycle->conf_ctx, ngx_core_module);
     ngx_pid_t pid;
     char *argv[4], cmd[1024];
     ngx_fd_t fd;
@@ -2116,40 +2114,44 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cy
     if (command->len > sizeof(cmd) - 1) {
         return -1;
     }
-    pid = fork();
-    switch (pid){
-    case -1:
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec fork(): error", MODULE_NAME);
-        return NGX_ERROR;
-    case 0:
-#if (NGX_LINUX)
-        if(prctl(PR_SET_PDEATHSIG, SIGKILL) == -1) {
-            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec: prctl() failed", MODULE_NAME);
-        }
-#endif
-        sigprocmask(SIG_SETMASK, &mask, NULL);
-        dup2(rfd, STDIN_FILENO);
-        for (fd = 0; fd < NOFILE; fd++) {
-            if (fd != STDIN_FILENO && fd != STDOUT_FILENO && fd != STDERR_FILENO) {
-                close(fd);
+
+    switch (pid = fork())
+    {
+        case -1:
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec fork(): error", MODULE_NAME);
+            return NGX_ERROR;
+        case 0:
+            if(prctl(PR_SET_PDEATHSIG, SIGKILL) == -1) {
+                ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec: prctl() failed", MODULE_NAME);
             }
+            dup2(rfd, STDIN_FILENO);
+            for (fd = 0; fd < NOFILE; fd++) {
+                if (fd != STDIN_FILENO && fd != STDOUT_FILENO && fd != STDERR_FILENO) {
+                    close(fd);
+                }
+            }
+            memset(cmd, 0, sizeof(cmd));
+            memcpy(cmd, command->data, command->len);
+            argv[0] = SHELL_CMD;
+            argv[1] = "-c";
+            argv[2] = cmd;
+            argv[3] = NULL;
+            execvp(argv[0], argv);
+            exit(1);
+        default:
+            if (setresuid(0, 0, ccf->user) == -1) {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno, "%s: setresuid(%d, %d, %d) failed", MODULE_NAME, 0, 0, ccf->user);
+                /* fatal */
+                exit(2);
+            }
+
+            break;
         }
-        memset(cmd, 0, sizeof(cmd));
-        memcpy(cmd, command->data, command->len);
-        argv[0] = SHELL_CMD;
-        argv[1] = "-c";
-        argv[2] = cmd;
-        argv[3] = NULL;
-        execvp(argv[0], argv);
-        exit(1);
-    default:
-        break;
-    }
     return pid;
 }
 
 static ngx_uint_t
-ngx_http_pipelog_reap_child (ngx_cycle_t *cycle, sigset_t mask) {
+ngx_http_pipelog_reap_chelid (ngx_cycle_t *cycle) {
     struct timeval now, diff;
     ngx_http_pipelog_main_conf_t *pmcf;
     ngx_uint_t num, idx;
@@ -2179,7 +2181,7 @@ ngx_http_pipelog_reap_child (ngx_cycle_t *cycle, sigset_t mask) {
             continue;
         }
         pim[idx].timestamp = now;
-        pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0], cycle, mask);
+        pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0], cycle);
         if (pim[idx].pid == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: reap child process (pid='%d'), respawn child process failed", MODULE_NAME, pid);
             continue;
@@ -2192,8 +2194,7 @@ ngx_http_pipelog_reap_child (ngx_cycle_t *cycle, sigset_t mask) {
 void
 ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     struct sigaction sa;
-    sigset_t set, old;
-    ngx_core_conf_t *ccf;
+    sigset_t set;
     struct timeval now, diff;
     ngx_http_pipelog_main_conf_t *pmcf;
     ngx_http_pipelog_pim_t *pim;
@@ -2210,21 +2211,15 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     sigemptyset(&set);
     sigaddset(&set, SIGTERM);
     sigaddset(&set, SIGCHLD);
-    sigprocmask(SIG_BLOCK, &set, &old);
+    sigprocmask(SIG_BLOCK, &set, NULL);
 
-    ccf = (ngx_core_conf_t *)ngx_get_conf(cycle->conf_ctx, ngx_core_module);
-    if (geteuid() == 0) {
-        if (setresuid(-1, -1, ccf->user) == -1) {
-            ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno, "%s: setresuid(%d, %d, %d) failed", MODULE_NAME, -1, -1, ccf->user);
-            /* fatal */
-            exit(2);
-        }
-    }
+    //sigaction(SIGTERM, &sa, NULL);
+
     gettimeofday(&now, NULL);
     pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
     pim = pmcf->pims.elts;
     for (idx = 0; idx < pmcf->pims.nelts; idx++) {
-        pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0], cycle, old);
+        pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0], cycle);
         if (pim[idx].pid == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec(): error", MODULE_NAME);
         }
@@ -2245,7 +2240,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
         }
 
         if (sig != -1) {
-            ngx_http_pipelog_reap_child(cycle, old);
+            ngx_http_pipelog_reap_chelid(cycle);
         } else {
             gettimeofday(&now, NULL);
             pim = pmcf->pims.elts;
@@ -2258,7 +2253,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
                     continue;
                 }
                 pim[idx].timestamp = now;
-                pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0], cycle, old);
+                pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0], cycle);
                 if (pim[idx].pid == -1) {
                     ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: respawn child process failed", MODULE_NAME);
                     continue;
@@ -2270,14 +2265,15 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
 }
 
 static ngx_int_t
-init_module (ngx_cycle_t *cycle) {
+init_module(ngx_cycle_t *cycle) {
     ngx_http_pipelog_main_conf_t *pmcf;
     ngx_fd_t fd;
 
+    ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "%s: init_module called, pid=%d", MODULE_NAME, getpid());
     if (!ngx_test_config) {
         pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
-        pmcf->pid = fork();
-        switch (pmcf->pid) {
+        switch (pmcf->pid = fork())
+        {
         case -1:
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: init_module fork(): error", MODULE_NAME);
             return NGX_ERROR;
@@ -2286,6 +2282,7 @@ init_module (ngx_cycle_t *cycle) {
                 ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: init_module: setpgid() failed", MODULE_NAME);
                 return NGX_ERROR;
             }
+            ngx_pid = ngx_getpid();
             fd = open("/dev/null", O_RDWR);
             if (fd != -1) {
                 dup2(fd, STDIN_FILENO);
@@ -2300,25 +2297,28 @@ init_module (ngx_cycle_t *cycle) {
             break;
         }
     }
+
     return NGX_OK;
 }
 
 static void
 exit_process (ngx_cycle_t *cycle) {
     ngx_http_pipelog_main_conf_t *pmcf;
-
     pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
+
     ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "%s: exit_process called", MODULE_NAME);
-    if(killpg(pmcf->pid, SIGTERM) == -1) {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: exit_process: killpg(%d, SIGTERM) failed ", MODULE_NAME, pmcf->pid);
+
+    ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "%s: exit_process: kill(%d, SIGTERM)", MODULE_NAME, pmcf->pid);
+    if(kill(pmcf->pid, SIGTERM) == -1) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: exit_process: kill(%d, SIGTERM) failed ", MODULE_NAME, pmcf->pid);
     }
 }
 
 static void
 exit_master (ngx_cycle_t *cycle) {
     ngx_http_pipelog_main_conf_t *pmcf;
-
     pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
+
     ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "%s: exit_master called", MODULE_NAME);
     if(kill(pmcf->pid, SIGKILL) == -1) {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: exit_master: kill(%d, SIGTERM) failed ", MODULE_NAME, pmcf->pid);
