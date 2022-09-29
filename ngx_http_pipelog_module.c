@@ -2149,7 +2149,7 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cy
 }
 
 static ngx_uint_t
-ngx_http_pipelog_reap_chelid (ngx_cycle_t *cycle, sigset_t mask) {
+ngx_http_pipelog_reap_child (ngx_cycle_t *cycle, sigset_t mask) {
     struct timeval now, diff;
     ngx_http_pipelog_main_conf_t *pmcf;
     ngx_uint_t num, idx;
@@ -2245,7 +2245,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
         }
 
         if (sig != -1) {
-            ngx_http_pipelog_reap_chelid(cycle, old);
+            ngx_http_pipelog_reap_child(cycle, old);
         } else {
             gettimeofday(&now, NULL);
             pim = pmcf->pims.elts;
