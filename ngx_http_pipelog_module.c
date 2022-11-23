@@ -1697,9 +1697,6 @@ ngx_http_log_init(ngx_conf_t *cf)
 #include <ngx_setproctitle.h>
 #include <ngx_process.h>
 #include <sys/param.h>
-#if (NGX_LINUX)
-#include <linux/prctl.h>
-#endif
 
 #define MODULE_NAME "ngx_http_pipelog_module"
 #define LOGGER_PROC_NAME "logger process"
@@ -2122,11 +2119,6 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cy
         ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec fork(): error", MODULE_NAME);
         return NGX_ERROR;
     case 0:
-#if (NGX_LINUX)
-        if(prctl(PR_SET_PDEATHSIG, SIGKILL) == -1) {
-            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec: prctl() failed", MODULE_NAME);
-        }
-#endif
         sigprocmask(SIG_SETMASK, &mask, NULL);
         dup2(rfd, STDIN_FILENO);
         for (fd = 0; fd < NOFILE; fd++) {
