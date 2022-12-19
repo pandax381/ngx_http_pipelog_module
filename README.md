@@ -13,7 +13,7 @@ This module allows to send HTTP access log to an external program via pipe.
     ./configure --add-module=/path/to/ngx_http_pipelog_module
     make && sudo make install
 
-Note: This module has been tested with nginx 1.5.6 and 1.4.3
+Note: This module has been tested with nginx 1.23.3 and 1.22.1 and 1.14.2
 
 ## Directives
 
