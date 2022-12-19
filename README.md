@@ -19,7 +19,7 @@ Note: This module has been tested with nginx 1.5.6 and 1.4.3
 
 ***pipelog_format***
   
-    pipelog_format name string ...
+    pipelog_format name [escape=default|json|none] string ...
 
   * syntax is same as log_format of HttpLogModule.
   * default value is *combined*.
