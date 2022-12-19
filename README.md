@@ -74,8 +74,8 @@ SUCH DAMAGE.
 ### Additional Code
 
 ```
-Copyright (c) 2013-2017 YAMAMOTO Masaya
-Copyright (c) 2013-2017 KLab Inc.
+Copyright (c) 2013-2022 YAMAMOTO Masaya
+Copyright (c) 2013-2022 KLab Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
