@@ -2073,7 +2073,7 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     }
     pipelog->pim->command = value[1];
 
-    int result = wordexp((const char*)value[1].data, &w, WRDE_NOCMD);
+    int result = wordexp((const char*)value[1].data, &w, 0);
     if (result != 0) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "wrong command syntax(%i): %s", result, value[1].data);
         return NGX_CONF_ERROR;
@@ -2267,13 +2267,13 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cy
         memset(cmd, 0, sizeof(cmd));
         memcpy(cmd, command->data, command->len);
 
-        if (wordexp(cmd, &w, WRDE_NOCMD) == 0) {
+        if (wordexp(cmd, &w, 0) == 0) {
             if (w.we_wordc > 0) {
                 char *bin = w.we_wordv[0];
                 if (*bin) {
                     sigfillset(&mask);
                     sigprocmask(SIG_UNBLOCK, &mask, NULL);
-                    execve(bin, w.we_wordv, NULL);
+                    execvp(bin, w.we_wordv);
                 }
             }
             wordfree(&w);
