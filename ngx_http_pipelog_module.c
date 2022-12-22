@@ -12,6 +12,7 @@
 #if (NGX_ZLIB)
 #include <zlib.h>
 #endif
+#include <wordexp.h>
 
 typedef struct ngx_http_log_op_s  ngx_http_log_op_t;
 
@@ -1823,7 +1824,6 @@ ngx_http_log_init(ngx_conf_t *cf)
 
 #define MODULE_NAME "ngx_http_pipelog_module"
 #define LOGGER_PROC_NAME "logger process"
-#define SHELL_CMD "/bin/sh"
 
 typedef struct {
     ngx_array_t pims;
@@ -1986,6 +1986,7 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_uint_t i;
     ngx_http_compile_complex_value_t ccv;
     ngx_uint_t nonblocking = 0;
+    wordexp_t  w;
 
     plcf = conf;
     value = cf->args->elts;
@@ -2071,6 +2072,20 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
         ngx_nonblocking(pipelog->pim->fd[1]);
     }
     pipelog->pim->command = value[1];
+
+    int result = wordexp((const char*)value[1].data, &w, WRDE_NOCMD);
+    if (result != 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "wrong command syntax(%i): %s", result, value[1].data);
+        return NGX_CONF_ERROR;
+    }
+    int word_count = w.we_wordc;
+    wordfree(&w);
+
+    if (word_count < 1) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "no command: %s", value[1].data);
+        return NGX_CONF_ERROR;
+    }
+
     return NGX_CONF_OK;
 }
 
@@ -2230,9 +2245,9 @@ ngx_http_pipelog_init (ngx_conf_t *cf) {
 static ngx_pid_t
 ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cycle, sigset_t mask) {
     ngx_pid_t pid;
-    char *argv[4], cmd[1024];
+    char cmd[1024];
     ngx_fd_t fd;
-
+    wordexp_t  w;
     if (command->len > sizeof(cmd) - 1) {
         return -1;
     }
@@ -2251,11 +2266,18 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cy
         }
         memset(cmd, 0, sizeof(cmd));
         memcpy(cmd, command->data, command->len);
-        argv[0] = SHELL_CMD;
-        argv[1] = "-c";
-        argv[2] = cmd;
-        argv[3] = NULL;
-        execvp(argv[0], argv);
+
+        if (wordexp(cmd, &w, WRDE_NOCMD) == 0) {
+            if (w.we_wordc > 0) {
+                char *bin = w.we_wordv[0];
+                if (*bin) {
+                    sigfillset(&mask);
+                    sigprocmask(SIG_UNBLOCK, &mask, NULL);
+                    execve(bin, w.we_wordv, NULL);
+                }
+            }
+            wordfree(&w);
+        }
         exit(1);
     default:
         break;
