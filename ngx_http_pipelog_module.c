@@ -1841,6 +1841,7 @@ typedef struct {
     ngx_fd_t fd[2];
     ngx_str_t command;
     ngx_uint_t nonblocking;
+    wordexp_t  w;
     pid_t pid;
     struct timeval timestamp;
 } ngx_http_pipelog_pim_t;
@@ -1986,7 +1987,6 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_uint_t i;
     ngx_http_compile_complex_value_t ccv;
     ngx_uint_t nonblocking = 0;
-    wordexp_t  w;
 
     plcf = conf;
     value = cf->args->elts;
@@ -2073,13 +2073,13 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     }
     pipelog->pim->command = value[1];
 
-    int result = wordexp((const char*)value[1].data, &w, 0);
+    int result = wordexp((const char*)value[1].data, &pipelog->pim->w, 0);
     if (result != 0) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "wrong command syntax(%i): %s", result, value[1].data);
         return NGX_CONF_ERROR;
     }
-    int word_count = w.we_wordc;
-    wordfree(&w);
+    int word_count = pipelog->pim->w.we_wordc;
+    wordfree(&pipelog->pim->w);
 
     if (word_count < 1) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "no command: %s", value[1].data);
@@ -2247,7 +2247,7 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cy
     ngx_pid_t pid;
     char cmd[1024];
     ngx_fd_t fd;
-    wordexp_t  w;
+    ngx_http_pipelog_pim_t pim;
     if (command->len > sizeof(cmd) - 1) {
         return -1;
     }
@@ -2267,16 +2267,16 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cy
         memset(cmd, 0, sizeof(cmd));
         memcpy(cmd, command->data, command->len);
 
-        if (wordexp(cmd, &w, 0) == 0) {
-            if (w.we_wordc > 0) {
-                char *bin = w.we_wordv[0];
+        if (wordexp(cmd, &pim.w, 0) == 0) {
+            if (pim.w.we_wordc > 0) {
+                char *bin = pim.w.we_wordv[0];
                 if (*bin) {
                     sigfillset(&mask);
                     sigprocmask(SIG_UNBLOCK, &mask, NULL);
-                    execvp(bin, w.we_wordv);
+                    execvp(bin, pim.w.we_wordv);
                 }
             }
-            wordfree(&w);
+            wordfree(&pim.w);
         }
         exit(1);
     default:
