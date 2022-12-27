@@ -12,6 +12,7 @@
 #if (NGX_ZLIB)
 #include <zlib.h>
 #endif
+#include <wordexp.h>
 
 typedef struct ngx_http_log_op_s  ngx_http_log_op_t;
 
@@ -1823,7 +1824,6 @@ ngx_http_log_init(ngx_conf_t *cf)
 
 #define MODULE_NAME "ngx_http_pipelog_module"
 #define LOGGER_PROC_NAME "logger process"
-#define SHELL_CMD "/bin/sh"
 
 typedef struct {
     ngx_array_t pims;
@@ -1839,8 +1839,8 @@ typedef struct {
 
 typedef struct {
     ngx_fd_t fd[2];
-    ngx_str_t command;
     ngx_uint_t nonblocking;
+    wordexp_t  w;
     pid_t pid;
     struct timeval timestamp;
 } ngx_http_pipelog_pim_t;
@@ -2070,7 +2070,20 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     if (pipelog->pim->nonblocking) {
         ngx_nonblocking(pipelog->pim->fd[1]);
     }
-    pipelog->pim->command = value[1];
+
+    int result = wordexp((const char*)value[1].data, &pipelog->pim->w, 0);
+    if (result != 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "wrong command syntax(%i): %s", result, value[1].data);
+        return NGX_CONF_ERROR;
+    }
+    int word_count = pipelog->pim->w.we_wordc;
+    wordfree(&pipelog->pim->w);
+
+    if (word_count < 1) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "no command: %s", value[1].data);
+        return NGX_CONF_ERROR;
+    }
+
     return NGX_CONF_OK;
 }
 
@@ -2228,12 +2241,12 @@ ngx_http_pipelog_init (ngx_conf_t *cf) {
 }
 
 static ngx_pid_t
-ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cycle, sigset_t mask) {
+ngx_http_pipelog_command_exec (wordexp_t *w, ngx_fd_t rfd, ngx_cycle_t *cycle) {
     ngx_pid_t pid;
-    char *argv[4], cmd[1024];
     ngx_fd_t fd;
+    sigset_t mask;
 
-    if (command->len > sizeof(cmd) - 1) {
+    if (!w) {
         return -1;
     }
     pid = fork();
@@ -2242,20 +2255,15 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cy
         ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec fork(): error", MODULE_NAME);
         return NGX_ERROR;
     case 0:
-        sigprocmask(SIG_SETMASK, &mask, NULL);
         dup2(rfd, STDIN_FILENO);
         for (fd = 0; fd < NOFILE; fd++) {
             if (fd != STDIN_FILENO && fd != STDOUT_FILENO && fd != STDERR_FILENO) {
                 close(fd);
             }
         }
-        memset(cmd, 0, sizeof(cmd));
-        memcpy(cmd, command->data, command->len);
-        argv[0] = SHELL_CMD;
-        argv[1] = "-c";
-        argv[2] = cmd;
-        argv[3] = NULL;
-        execvp(argv[0], argv);
+        sigfillset(&mask);
+        sigprocmask(SIG_UNBLOCK, &mask, NULL);
+        execvp(w->we_wordv[0], w->we_wordv);
         exit(1);
     default:
         break;
@@ -2264,7 +2272,7 @@ ngx_http_pipelog_command_exec (ngx_str_t *command, ngx_fd_t rfd, ngx_cycle_t *cy
 }
 
 static ngx_uint_t
-ngx_http_pipelog_reap_child (ngx_cycle_t *cycle, sigset_t mask) {
+ngx_http_pipelog_reap_child (ngx_cycle_t *cycle) {
     struct timeval now, diff;
     ngx_http_pipelog_main_conf_t *pmcf;
     ngx_uint_t num, idx;
@@ -2294,7 +2302,7 @@ ngx_http_pipelog_reap_child (ngx_cycle_t *cycle, sigset_t mask) {
             continue;
         }
         pim[idx].timestamp = now;
-        pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0], cycle, mask);
+        pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].w, pim[idx].fd[0], cycle);
         if (pim[idx].pid == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: reap child process (pid='%d'), respawn child process failed", MODULE_NAME, pid);
             continue;
@@ -2307,7 +2315,7 @@ ngx_http_pipelog_reap_child (ngx_cycle_t *cycle, sigset_t mask) {
 void
 ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     struct sigaction sa;
-    sigset_t set, old;
+    sigset_t set;
     ngx_core_conf_t *ccf;
     struct timeval now, diff;
     ngx_http_pipelog_main_conf_t *pmcf;
@@ -2325,7 +2333,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     sigemptyset(&set);
     sigaddset(&set, SIGTERM);
     sigaddset(&set, SIGCHLD);
-    sigprocmask(SIG_BLOCK, &set, &old);
+    sigprocmask(SIG_BLOCK, &set, NULL);
 
     ccf = (ngx_core_conf_t *)ngx_get_conf(cycle->conf_ctx, ngx_core_module);
     if (geteuid() == 0) {
@@ -2339,7 +2347,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
     pim = pmcf->pims.elts;
     for (idx = 0; idx < pmcf->pims.nelts; idx++) {
-        pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0], cycle, old);
+        pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].w, pim[idx].fd[0], cycle);
         if (pim[idx].pid == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec(): error", MODULE_NAME);
         }
@@ -2360,7 +2368,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
         }
 
         if (sig != -1) {
-            ngx_http_pipelog_reap_child(cycle, old);
+            ngx_http_pipelog_reap_child(cycle);
         } else {
             gettimeofday(&now, NULL);
             pim = pmcf->pims.elts;
@@ -2373,7 +2381,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
                     continue;
                 }
                 pim[idx].timestamp = now;
-                pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].command, pim[idx].fd[0], cycle, old);
+                pim[idx].pid = ngx_http_pipelog_command_exec(&pim[idx].w, pim[idx].fd[0], cycle);
                 if (pim[idx].pid == -1) {
                     ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: respawn child process failed", MODULE_NAME);
                     continue;
