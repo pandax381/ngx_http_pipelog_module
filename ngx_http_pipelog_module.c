@@ -2077,7 +2077,6 @@ ngx_http_pipelog_set_log (ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
         return NGX_CONF_ERROR;
     }
     int word_count = pipelog->pim->w.we_wordc;
-    wordfree(&pipelog->pim->w);
 
     if (word_count < 1) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "no command: %s", value[1].data);
