@@ -2323,7 +2323,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     struct timespec timeout;
     int sig;
 
-    ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "%s: start logger process %d", MODULE_NAME, getpid());
+    ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "p[%d]: %s: new logger process started", getpid(), MODULE_NAME);
 
     memset(&sa, 0, sizeof(sa));
 
@@ -2391,6 +2391,22 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
     }
 }
 
+static void close_pipes(ngx_cycle_t *cycle) {
+    ngx_http_pipelog_main_conf_t *pmcf;
+    ngx_http_pipelog_pim_t *pim;
+    ngx_uint_t idx;
+
+    if (cycle && cycle->modules) {
+        pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
+        pim = pmcf->pims.elts;
+        for (idx = 0; idx < pmcf->pims.nelts; idx++) {
+            ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "p[%d]: %s: closing pipes: rd: %i, wr: %i", getpid(), MODULE_NAME, pim[idx].fd[0], pim[idx].fd[1]);
+            close(pim[idx].fd[0])
+            close(pim[idx].fd[1]);
+        }
+    }
+}
+
 static ngx_int_t
 init_module (ngx_cycle_t *cycle) {
     ngx_http_pipelog_main_conf_t *pmcf;
@@ -2406,7 +2422,7 @@ init_module (ngx_cycle_t *cycle) {
         case 0:
             if(setpgid(0, 0) == -1) {
                 ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: init_module: setpgid() failed", MODULE_NAME);
-                return NGX_ERROR;
+                exit(1);
             }
             fd = open("/dev/null", O_RDWR);
             if (fd != -1) {
@@ -2415,10 +2431,12 @@ init_module (ngx_cycle_t *cycle) {
                 dup2(fd, STDERR_FILENO);
                 close(fd);
             }
+            close_pipes(cycle->old_cycle);
             ngx_setproctitle(LOGGER_PROC_NAME);
             ngx_http_pipelog_logger_process_main(cycle);
             exit(1);
         default:
+            close_pipes(cycle->old_cycle);
             break;
         }
     }
@@ -2431,6 +2449,8 @@ exit_process (ngx_cycle_t *cycle) {
 
     pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
     ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "%s: exit_process called", MODULE_NAME);
+    close_pipes(cycle);
+
     if(killpg(pmcf->pid, SIGTERM) == -1) {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: exit_process: killpg(%d, SIGTERM) failed ", MODULE_NAME, pmcf->pid);
     }
@@ -2442,7 +2462,9 @@ exit_master (ngx_cycle_t *cycle) {
 
     pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
     ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "%s: exit_master called", MODULE_NAME);
-    if(kill(pmcf->pid, SIGKILL) == -1) {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: exit_master: kill(%d, SIGTERM) failed ", MODULE_NAME, pmcf->pid);
+    if(!ngx_terminate) {
+        if(kill(pmcf->pid, SIGKILL) == -1) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: exit_master: kill(%d, SIGTERM) failed ", MODULE_NAME, pmcf->pid);
+        }
     }
 }
