@@ -158,7 +158,7 @@ static char *ngx_http_log_compile_format(ngx_conf_t *cf,
 static char *ngx_http_log_open_file_cache(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static ngx_int_t ngx_http_log_init(ngx_conf_t *cf);
-
+static void close_pipes(ngx_cycle_t *cycle);
 
 static ngx_command_t  ngx_http_log_commands[] = {
 
@@ -2360,6 +2360,7 @@ ngx_http_pipelog_logger_process_main (ngx_cycle_t *cycle) {
 
         if(sig == SIGTERM) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec(): SIGTERM detected, gracefully shutting down...", MODULE_NAME);
+            close_pipes(cycle);
             if(killpg(0, SIGTERM) == -1) {
                 ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: ngx_http_pipelog_command_exec: killpg(%d, SIGTERM) failed ", MODULE_NAME, 0);
             }
@@ -2446,7 +2447,6 @@ init_module (ngx_cycle_t *cycle) {
 static void
 exit_process (ngx_cycle_t *cycle) {
     ngx_http_pipelog_main_conf_t *pmcf;
-
     pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
     ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "%s: exit_process called", MODULE_NAME);
     close_pipes(cycle);
@@ -2459,9 +2459,10 @@ exit_process (ngx_cycle_t *cycle) {
 static void
 exit_master (ngx_cycle_t *cycle) {
     ngx_http_pipelog_main_conf_t *pmcf;
-
     pmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_pipelog_module);
     ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "%s: exit_master called", MODULE_NAME);
+    close_pipes(cycle);
+
     if(!ngx_terminate) {
         if(kill(pmcf->pid, SIGKILL) == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "%s: exit_master: kill(%d, SIGTERM) failed ", MODULE_NAME, pmcf->pid);
