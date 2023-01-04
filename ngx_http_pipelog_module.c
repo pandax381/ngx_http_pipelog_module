@@ -2401,7 +2401,7 @@ static void close_pipes(ngx_cycle_t *cycle) {
         pim = pmcf->pims.elts;
         for (idx = 0; idx < pmcf->pims.nelts; idx++) {
             ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "p[%d]: %s: closing pipes: rd: %i, wr: %i", getpid(), MODULE_NAME, pim[idx].fd[0], pim[idx].fd[1]);
-            close(pim[idx].fd[0])
+            close(pim[idx].fd[0]);
             close(pim[idx].fd[1]);
         }
     }
