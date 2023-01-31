@@ -39,7 +39,7 @@ Note: This module has been tested with nginx 1.23.3 and 1.22.1 and 1.14.2
                         '$status $body_bytes_sent "$http_referer" '
                         '"$http_user_agent" "$http_x_forwarded_for"';
       
-      pipelog "cat >> /var/log/nginx/access.log" main;
+      pipelog "logger -t nginx" main;
 
 ## License
 
